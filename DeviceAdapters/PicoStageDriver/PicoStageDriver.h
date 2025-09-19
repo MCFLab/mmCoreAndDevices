@@ -80,6 +80,7 @@ public:
    int OnVelocityY(MM::PropertyBase* pProp, MM::ActionType eAct);
    int OnAccelX(MM::PropertyBase* pProp, MM::ActionType eAct);
    int OnAccelY(MM::PropertyBase* pProp, MM::ActionType eAct);
+   int OnRemote(MM::PropertyBase* pProp, MM::ActionType eAct);
 
 private:
    int GetIntegerFromDevice(const char* command, int channel, int& value);
@@ -87,14 +88,10 @@ private:
 
    CPicoHub* hub_;
    bool initialized_;
-   int xChannel_; // 0-based channel number for X axis
-   int yChannel_; // 0-based channel number for Y axis
+   int channelX_; // 0-based channel number for X axis
+   int channelY_; // 0-based channel number for Y axis
    double stepSizeXUm_;
    double stepSizeYUm_;
-   double velX_; // [mm/s]
-   double velY_; // [mm/s]
-   double accelX_; // [m/s²]
-   double accelY_; // [m/s²]
 };
 
 
@@ -130,6 +127,7 @@ public:
    int OnStepSize(MM::PropertyBase* pProp, MM::ActionType eAct);
    int OnVelocity(MM::PropertyBase* pProp, MM::ActionType eAct);
    int OnAccel(MM::PropertyBase* pProp, MM::ActionType eAct);
+   int OnRemote(MM::PropertyBase* pProp, MM::ActionType eAct);
 
 private:
    int GetIntegerFromDevice(const char* command, int channel, int& value);
@@ -141,6 +139,4 @@ private:
    int channel_; // 0-based channel number for axis
    double stepSizeUm_;
    long originSteps_;
-   double vel_; // [mm/s]
-   double accel_; // [m/s²]
 };

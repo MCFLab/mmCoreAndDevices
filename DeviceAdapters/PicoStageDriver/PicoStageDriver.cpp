@@ -9,8 +9,6 @@
 #include <sstream>
 
 
-
-
 const char* g_PicoHubName = "Pico-Hub";
 const char* g_PicoXYStageName = "Pico-XYStage";
 const char* g_PicoZStageName = "Pico-ZStage";
@@ -228,14 +226,14 @@ int CPicoHub::DetectInstalledDevices()
    {
       // get the number of attached devices
       int numDevices = 0;
-      ret = GetIntegerFromDevice("NDEV", -2, numDevices, NULL); // axis <-1 is ignored
+      ret = GetIntegerFromDevice("PC_NDEV", -2, numDevices, NULL); // axis <-1 is ignored
       if (ret != DEVICE_OK) return ret;
       if (numDevices<1) return ERR_NO_DEVICE_DETECTED;
       if (numDevices>4) return ERR_INVALID_NUMBER_OF_DEVICES; // Pico Hub supports 1-4 devices
       // get the axis type for each device
       for (int idx = 0; idx < numDevices; idx++)
       {
-         ret = GetIntegerFromDevice("AXTYP", idx, axType, NULL);
+         ret = GetIntegerFromDevice("MP_TAXI", idx, axType, NULL);
          if (ret != DEVICE_OK) return ret;
          if (axType < 0 || axType >= chName.size()) {
             LogMessage("Pico Hub: Unsupported axis type detected", true);
@@ -354,13 +352,17 @@ int CPicoHub::SendIntegerToDevice(const char* command, int axis, int value, char
    ret = GetSerialAnswer(port_.c_str(), termChar_, answer);
    if (ret != DEVICE_OK) return ret;
 
-   // the response should be in the form "Error=0"
-   std::string prefix = std::string("Error=0");
+   // the response should be in the form "ERROR=0"
+   std::string prefix = std::string("ERROR=0");
    size_t pos = answer.find(prefix);
    if (pos != std::string::npos) {
       return DEVICE_OK;
    }
-   else {
+   else { // we have an error
+      
+      snprintf(buf, bufSize, "GPC_EMSG");
+      SendSerialCommand(port_.c_str(), buf, termChar_);
+      GetSerialAnswer(port_.c_str(), termChar_, answer);
       LogMessage("Pico Hub: " + answer, false);
       if (errStr) snprintf(errStr, MM::MaxStrLength, "Pico Hub: %s", answer.c_str());
       return ERR_DYNAMIC_DESCRIPTION;
@@ -397,14 +399,14 @@ int CPicoHub::IdentifyAxisChannel(const char* axisLabel, int& channel)
    int axType; // 0->Undef, 1->X, 2->Y, 3->Z, 4->Aux
    int numDevices = 0;
 
-   ret = GetIntegerFromDevice("NDEV", -2, numDevices, NULL); // axis parameter <-1 is "ignore"
+   ret = GetIntegerFromDevice("PC_NDEV", -2, numDevices, NULL); // axis parameter <-1 is "ignore"
    if (ret != DEVICE_OK) return ret;
    if (numDevices < 1) return ERR_NO_DEVICE_DETECTED;
    if (numDevices > 4) return ERR_INVALID_NUMBER_OF_DEVICES; // Pico Hub supports 1-4 devices
    // get the axis type for each device
    for (int idx = 0; idx < numDevices; idx++)
    {
-      ret = GetIntegerFromDevice("AXTYP", idx, axType, NULL);
+      ret = GetIntegerFromDevice("MP_TAXI", idx, axType, NULL);
       if (ret != DEVICE_OK) return ret;
       if (axType < 0 || axType >= chName.size()) {
          LogMessage("Pico Hub: Unsupported axis type detected", true);
@@ -447,12 +449,8 @@ CPicoXYStage::CPicoXYStage() :
    hub_(nullptr),
    stepSizeXUm_(0.1), // um
    stepSizeYUm_(0.1), // um
-   velX_(20.0), // [mm/s]
-   velY_(20.0), // [mm/s]
-   accelX_(0.2), // [mm/s²]
-   accelY_(0.2), // [mm/s²]
-   xChannel_(-1), // channel on the controller, -1 means not set
-   yChannel_(-1) // channel on the controller, -1 means not set
+   channelX_(-1), // channel on the controller, -1 means not set
+   channelY_(-1) // channel on the controller, -1 means not set
 {
    InitializeDefaultErrorMessages();
 
@@ -508,9 +506,9 @@ int CPicoXYStage::Initialize()
 
 
    // figure out which axes are the "X" and "Y" axes
-   int ret = hub_->IdentifyAxisChannel("X", xChannel_);
+   int ret = hub_->IdentifyAxisChannel("X", channelX_);
    if (ret != DEVICE_OK) return ret;
-   ret = hub_->IdentifyAxisChannel("Y", yChannel_);
+   ret = hub_->IdentifyAxisChannel("Y", channelY_);
    if (ret != DEVICE_OK) return ret;
 
    // set property list
@@ -523,35 +521,41 @@ int CPicoXYStage::Initialize()
    if (ret != DEVICE_OK) return ret;
 
    pAct = new CPropertyAction(this, &CPicoXYStage::OnVelocityX);
-   CreateFloatProperty("VelocityX [mm/s]", velX_, false, pAct); // mm/s
+   CreateFloatProperty("VelocityX [mm/s]", 0.0, false, pAct); // mm/s
    if (ret != DEVICE_OK) return ret;
 
    pAct = new CPropertyAction(this, &CPicoXYStage::OnVelocityY);
-   CreateFloatProperty("VelocityY [mm/s]", velY_, false, pAct); // mm/s
+   CreateFloatProperty("VelocityY [mm/s]", 0.0, false, pAct); // mm/s
    if (ret != DEVICE_OK) return ret;
 
    pAct = new CPropertyAction(this, &CPicoXYStage::OnAccelX);
-   CreateFloatProperty("AccelerationX [mm/s^2]", accelX_, false, pAct); // mm/s^2
+   CreateFloatProperty("AccelerationX [mm/s^2]", 0.0, false, pAct); // mm/s^2
    if (ret != DEVICE_OK) return ret;
-//   SetPropertyLimits("AccelerationX [mm/s^2]", 0.01, 2.0);
+//   SetPropertyLimits("AccelerationX [mm/s^2]", 0.01, 2.0); // limit checks in the device
 
    pAct = new CPropertyAction(this, &CPicoXYStage::OnAccelY);
-   CreateFloatProperty("AccelerationY [mm/s^2]", accelY_, false, pAct); // mm/s^2
+   CreateFloatProperty("AccelerationY [mm/s^2]", 0.0, false, pAct); // mm/s^2
    if (ret != DEVICE_OK) return ret;
-//   SetPropertyLimits("AccelerationY [mm/s^2]", 0.01, 2.0);
+//   SetPropertyLimits("AccelerationY [mm/s^2]", 0.01, 2.0); // limit checks in the device
+
+   pAct = new CPropertyAction(this, &CPicoXYStage::OnRemote);
+   ret = CreateProperty("IsRemoteControlled", "0", MM::Integer, false, pAct); // [0 or 1]
+   if (ret != DEVICE_OK) return ret;
+   AddAllowedValue("IsRemoteControlled", "0");
+   AddAllowedValue("IsRemoteControlled", "1");
 
    ret = UpdateStatus();
    if (ret != DEVICE_OK) return ret;
 
    // switch to serial mode, just in case a remote is attached and active
-   ret = SendIntegerToDevice("RP_ENAB", xChannel_, 0);
+   ret = SendIntegerToDevice("RP_ENAB", channelX_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("RP_ENAB", yChannel_, 0);
+   ret = SendIntegerToDevice("RP_ENAB", channelY_, 0);
    if (ret != DEVICE_OK) return ret;
    // enable the motors
-   ret = SendIntegerToDevice("MS_ENAB", xChannel_, 1);
+   ret = SendIntegerToDevice("MS_ENAB", channelX_, 1);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_ENAB", yChannel_, 1);
+   ret = SendIntegerToDevice("MS_ENAB", channelY_, 1);
    if (ret != DEVICE_OK) return ret;
 
    initialized_ = true;
@@ -609,9 +613,9 @@ bool CPicoXYStage::Busy()
 {
    int isDoneX, isDoneY;
 
-   int ret = GetIntegerFromDevice("MC_POSR", xChannel_, isDoneX);
+   int ret = GetIntegerFromDevice("MC_POSR", channelX_, isDoneX);
    if (ret != DEVICE_OK) return false;
-   ret = GetIntegerFromDevice("MC_POSR", yChannel_, isDoneY);
+   ret = GetIntegerFromDevice("MC_POSR", channelY_, isDoneY);
    if (ret != DEVICE_OK) return false;
 
    if (isDoneX == 1 && isDoneY == 1) return false; // both axes are done
@@ -624,9 +628,9 @@ bool CPicoXYStage::Busy()
  */
 int CPicoXYStage::SetPositionSteps(long x, long y)
 {
-   int ret = SendIntegerToDevice("MC_MPOS", xChannel_, (int)x);
+   int ret = SendIntegerToDevice("MC_MPOS", channelX_, (int)x);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MC_MPOS", yChannel_, (int)y);
+   ret = SendIntegerToDevice("MC_MPOS", channelY_, (int)y);
    if (ret != DEVICE_OK) return ret;
 
    return DEVICE_OK;
@@ -639,9 +643,9 @@ int CPicoXYStage::GetPositionSteps(long& x, long& y)
 {
    int xInt, yInt; // even though int and long are the same here, compiler enforces the types
 
-   int ret = GetIntegerFromDevice("MS_XACT", xChannel_, xInt);
+   int ret = GetIntegerFromDevice("MS_XACT", channelX_, xInt);
    if (ret != DEVICE_OK) return ret;
-   ret = GetIntegerFromDevice("MS_XACT", yChannel_, yInt);
+   ret = GetIntegerFromDevice("MS_XACT", channelY_, yInt);
    if (ret != DEVICE_OK) return ret;
 
    x = (long)xInt; // convert to long
@@ -657,27 +661,27 @@ int CPicoXYStage::SetOrigin()
 
    // sequence: disable motors, set the current, target, encoder positions to 0, enable motors again
    // xChannel
-   ret = SendIntegerToDevice("MS_ENAB", xChannel_, 0);
+   ret = SendIntegerToDevice("MS_ENAB", channelX_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_XACT", xChannel_, 0);
+   ret = SendIntegerToDevice("MS_XACT", channelX_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_XTAR", xChannel_, 0);
+   ret = SendIntegerToDevice("MS_XTAR", channelX_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_XENC", xChannel_, 0);
+   ret = SendIntegerToDevice("MS_XENC", channelX_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_ENAB", xChannel_, 1);
+   ret = SendIntegerToDevice("MS_ENAB", channelX_, 1);
    if (ret != DEVICE_OK) return ret;
 
    // yChannel
-   ret = SendIntegerToDevice("MS_ENAB", yChannel_, 0);
+   ret = SendIntegerToDevice("MS_ENAB", channelY_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_XACT", yChannel_, 0);
+   ret = SendIntegerToDevice("MS_XACT", channelY_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_XTAR", yChannel_, 0);
+   ret = SendIntegerToDevice("MS_XTAR", channelY_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_XENC", yChannel_, 0);
+   ret = SendIntegerToDevice("MS_XENC", channelY_, 0);
    if (ret != DEVICE_OK) return ret;
-   ret = SendIntegerToDevice("MS_ENAB", yChannel_, 1);
+   ret = SendIntegerToDevice("MS_ENAB", channelY_, 1);
    if (ret != DEVICE_OK) return ret;
 
    ret = SetAdapterOriginUm(0.0, 0.0); // set the adapter origin to 0,0
@@ -691,10 +695,10 @@ int CPicoXYStage::SetOrigin()
 int CPicoXYStage::Move(double velX, double velY)
 {
    int vel = nint(velX / stepSizeXUm_); // convert um/s to steps/s
-   int ret = SendIntegerToDevice("MC_MVEL", xChannel_, vel);
+   int ret = SendIntegerToDevice("MC_MVEL", channelX_, vel);
    if (ret != DEVICE_OK) return ret;
    vel = nint(velY / stepSizeYUm_); // convert um/s to steps/s
-   ret = SendIntegerToDevice("MC_MVEL", yChannel_, vel);
+   ret = SendIntegerToDevice("MC_MVEL", channelY_, vel);
    if (ret != DEVICE_OK) return ret;
 
    return DEVICE_OK;
@@ -721,7 +725,8 @@ double CPicoXYStage::GetStepSizeYUm()
 
 int CPicoXYStage::Home()
 {
-   return DEVICE_UNSUPPORTED_COMMAND;
+   return DEVICE_OK;
+//   return DEVICE_UNSUPPORTED_COMMAND;
 }
 
 
@@ -771,18 +776,20 @@ int CPicoXYStage::OnStepSizeY(MM::PropertyBase* pProp, MM::ActionType eAct)
 
 int CPicoXYStage::OnVelocityX(MM::PropertyBase* pProp, MM::ActionType eAct)
 {
+   int intVal;
+   double doubleVal;
+
    // velocity here is mm/s, in the device it's steps/s
    if (eAct == MM::BeforeGet)
    {
-      int vel;
-      int ret = GetIntegerFromDevice("MP_VSEV", xChannel_, vel);
+      int ret = GetIntegerFromDevice("MP_RSEV", channelX_, intVal);
       if (ret != DEVICE_OK) return ret;
-      pProp->Set(vel * stepSizeXUm_ * 1.0E-3);
+      pProp->Set(intVal * stepSizeXUm_ * 1.0E-3);
    }
    else if (eAct == MM::AfterSet)
    {
-      pProp->Get(velX_);
-      int ret = SendIntegerToDevice("MP_VSEV", xChannel_, (int)nint(1000.*velX_ / stepSizeXUm_));
+      pProp->Get(doubleVal);
+      int ret = SendIntegerToDevice("MP_RSEV", channelX_, (int)nint(1000.*doubleVal / stepSizeXUm_));
       if (ret != DEVICE_OK) return ret;
    }
    return DEVICE_OK;
@@ -790,18 +797,20 @@ int CPicoXYStage::OnVelocityX(MM::PropertyBase* pProp, MM::ActionType eAct)
 
 int CPicoXYStage::OnVelocityY(MM::PropertyBase* pProp, MM::ActionType eAct)
 {
+   int intVal;
+   double doubleVal;
+
    // velocity here is mm/s, in the device it's steps/s
    if (eAct == MM::BeforeGet)
    {
-      int vel;
-      int ret = GetIntegerFromDevice("MP_VSEV", yChannel_, vel);
+      int ret = GetIntegerFromDevice("MP_RSEV", channelY_, intVal);
       if (ret != DEVICE_OK) return ret;
-      pProp->Set(vel * stepSizeYUm_ * 1.0E-3);
+      pProp->Set(intVal * stepSizeYUm_ * 1.0E-3);
    }
    else if (eAct == MM::AfterSet)
    {
-      pProp->Get(velY_);
-      int ret = SendIntegerToDevice("MP_VSEV", yChannel_, (int)nint(1000. * velY_ / stepSizeYUm_));
+      pProp->Get(doubleVal);
+      int ret = SendIntegerToDevice("MP_RSEV", channelY_, (int)nint(1000. * doubleVal / stepSizeYUm_));
       if (ret != DEVICE_OK) return ret;
    }
    return DEVICE_OK;
@@ -811,45 +820,72 @@ int CPicoXYStage::OnVelocityY(MM::PropertyBase* pProp, MM::ActionType eAct)
 
 int CPicoXYStage::OnAccelX(MM::PropertyBase* pProp, MM::ActionType eAct)
 {
+   int intVal;
+   double doubleVal;
+
    // acc here is mm/s^2, in the device it's steps/s^2
    if (eAct == MM::BeforeGet)
    {
-      int accel;
-      int ret = GetIntegerFromDevice("MP_VSEA", xChannel_, accel);
+      int ret = GetIntegerFromDevice("MP_RSEA", channelX_, intVal);
       if (ret != DEVICE_OK) return ret;
-      pProp->Set(accel * stepSizeXUm_ * 1.0E-3);
+      pProp->Set(intVal * stepSizeXUm_ * 1.0E-3);
    }
    else if (eAct == MM::AfterSet)
    {
-      pProp->Get(accelX_);
-      int ret = SendIntegerToDevice("MP_VSEA", xChannel_, (int)nint(1.0E3 * accelX_ / stepSizeXUm_));
+      pProp->Get(doubleVal);
+      int ret = SendIntegerToDevice("MP_RSEA", channelX_, (int)nint(1.0E3 * doubleVal / stepSizeXUm_));
       if (ret != DEVICE_OK) return ret;
    }
    return DEVICE_OK;
 }
-
 
 
 int CPicoXYStage::OnAccelY(MM::PropertyBase* pProp, MM::ActionType eAct)
 {
+   int intVal;
+   double doubleVal;
+
    // acc here is mm/s^2, in the device it's steps/s^2
    if (eAct == MM::BeforeGet)
    {
-      int accel;
-      int ret = GetIntegerFromDevice("MP_VSEA", yChannel_, accel);
+      int ret = GetIntegerFromDevice("MP_RSEA", channelY_, intVal);
       if (ret != DEVICE_OK) return ret;
-      pProp->Set(accel* stepSizeYUm_ * 1.0E-3);
+      pProp->Set(intVal * stepSizeYUm_ * 1.0E-3);
    }
    else if (eAct == MM::AfterSet)
    {
-      pProp->Get(accelY_);
-      int ret = SendIntegerToDevice("MP_VSEA", yChannel_, (int)nint(1.0E3 * accelY_ / stepSizeYUm_));
+      pProp->Get(doubleVal);
+      int ret = SendIntegerToDevice("MP_RSEA", channelY_, (int)nint(1.0E3 * doubleVal / stepSizeYUm_));
       if (ret != DEVICE_OK) return ret;
    }
    return DEVICE_OK;
 }
 
 
+int CPicoXYStage::OnRemote(MM::PropertyBase* pProp, MM::ActionType eAct)
+{
+   int ret;
+   int isRemoteEnabledX, isRemoteEnabledY;
+   long longVal = 0;
+   if (eAct == MM::BeforeGet)
+   {
+      ret = GetIntegerFromDevice("RP_ENAB", channelX_, isRemoteEnabledX);
+      if (ret != DEVICE_OK) return ret;
+      ret = GetIntegerFromDevice("RP_ENAB", channelY_, isRemoteEnabledY);
+      if (ret != DEVICE_OK) return ret;
+      pProp->Set((long) (isRemoteEnabledX | isRemoteEnabledY));
+      if (ret != DEVICE_OK) return ret;
+   }
+   else if (eAct == MM::AfterSet)
+   {
+      pProp->Get(longVal);
+      ret = SendIntegerToDevice("RP_ENAB", channelX_, (int)longVal);
+      if (ret != DEVICE_OK) return ret;
+      ret = SendIntegerToDevice("RP_ENAB", channelY_, (int)longVal);
+      if (ret != DEVICE_OK) return ret;
+   }
+   return DEVICE_OK;
+}
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -860,8 +896,6 @@ CPicoStage::CPicoStage(const char* deviceName) :
    hub_(nullptr),
    stepSizeUm_(0.1),
    originSteps_(0),
-   vel_(20.0), // [mm/s]
-   accel_(0.2), // [m/s²]
    channel_(-1), // -1 means not set
    id_("-") // axis ID, e.g. "Z" or "Aux"
 {
@@ -942,13 +976,20 @@ int CPicoStage::Initialize()
    if (ret != DEVICE_OK) return ret;
 
    pAct = new CPropertyAction(this, &CPicoStage::OnVelocity);
-   CreateFloatProperty("Velocity [mm/s]", vel_, false, pAct); // mm/s
+   CreateFloatProperty("Velocity [mm/s]", 0.0, false, pAct); // mm/s
    if (ret != DEVICE_OK) return ret;
+   // SetPropertyLimits("Velocity [mm/s]", 0.01, 2.0); // limit checks in the device
 
    pAct = new CPropertyAction(this, &CPicoStage::OnAccel);
-   CreateFloatProperty("Acceleration [mm/s^2]", accel_, false, pAct); // mm/s^2
+   CreateFloatProperty("Acceleration [mm/s^2]", 0.0, false, pAct); // mm/s^2
    if (ret != DEVICE_OK) return ret;
-   //   SetPropertyLimits("AccelerationX [mm/s^2]", 0.01, 2.0);
+   // SetPropertyLimits("AccelerationX [mm/s^2]", 0.01, 2.0); // limit checks in the device
+
+   pAct = new CPropertyAction(this, &CPicoStage::OnRemote);
+   ret = CreateProperty("IsRemoteControlled", "0", MM::Integer, false, pAct); // [0 or 1]
+   if (ret != DEVICE_OK) return ret;
+   AddAllowedValue("IsRemoteControlled", "0");
+   AddAllowedValue("IsRemoteControlled", "1");
 
    ret = UpdateStatus();
    if (ret != DEVICE_OK) return ret;
@@ -1101,8 +1142,8 @@ int CPicoStage::Move(double vel)
 
 int CPicoStage::Home()
 {
-   return DEVICE_UNSUPPORTED_COMMAND;
-
+   return DEVICE_OK;
+//   return DEVICE_UNSUPPORTED_COMMAND;
 }
 
 
@@ -1135,18 +1176,20 @@ int CPicoStage::OnStepSize(MM::PropertyBase* pProp, MM::ActionType eAct)
 
 int CPicoStage::OnVelocity(MM::PropertyBase* pProp, MM::ActionType eAct)
 {
+   int intVal;
+   double doubleVal;
+
    // velocity here is mm/s, in the device it's steps/s
    if (eAct == MM::BeforeGet)
    {
-      int vel;
-      int ret = GetIntegerFromDevice("MP_VSEV", channel_, vel);
+      int ret = GetIntegerFromDevice("MP_RSEV", channel_, intVal);
       if (ret != DEVICE_OK) return ret;
-      pProp->Set(vel * stepSizeUm_ * 1.0E-3);
+      pProp->Set(intVal * stepSizeUm_ * 1.0E-3);
    }
    else if (eAct == MM::AfterSet)
    {
-      pProp->Get(vel_);
-      int ret = SendIntegerToDevice("MP_VSEV", channel_, (int)nint(1000. * vel_ / stepSizeUm_));
+      pProp->Get(doubleVal);
+      int ret = SendIntegerToDevice("MP_RSEV", channel_, (int)nint(1000. * doubleVal / stepSizeUm_));
       if (ret != DEVICE_OK) return ret;
    }
    return DEVICE_OK;
@@ -1155,20 +1198,40 @@ int CPicoStage::OnVelocity(MM::PropertyBase* pProp, MM::ActionType eAct)
 
 int CPicoStage::OnAccel(MM::PropertyBase* pProp, MM::ActionType eAct)
 {
+   int intVal;
+   double doubleVal;
+
    // acc here is mm/s^2, in the device it's steps/s^2
    if (eAct == MM::BeforeGet)
    {
-      int accel;
-      int ret = GetIntegerFromDevice("MP_VSEA", channel_, accel);
+      int ret = GetIntegerFromDevice("MP_RSEA", channel_, intVal);
       if (ret != DEVICE_OK) return ret;
-      pProp->Set(accel * stepSizeUm_ * 1.0E-3);
+      pProp->Set(intVal * stepSizeUm_ * 1.0E-3);
    }
    else if (eAct == MM::AfterSet)
    {
-      pProp->Get(accel_);
-      int ret = SendIntegerToDevice("MP_VSEA", channel_, (int)nint(1.0E3 * accel_ / stepSizeUm_));
+      pProp->Get(doubleVal);
+      int ret = SendIntegerToDevice("MP_RSEA", channel_, (int)nint(1.0E3 * doubleVal / stepSizeUm_));
       if (ret != DEVICE_OK) return ret;
    }
    return DEVICE_OK;
 }
 
+int CPicoStage::OnRemote(MM::PropertyBase* pProp, MM::ActionType eAct)
+{
+   int intVal;
+   long longVal;
+   if (eAct == MM::BeforeGet)
+   {
+      int ret = GetIntegerFromDevice("RP_ENAB", channel_, intVal);
+      if (ret != DEVICE_OK) return ret;
+      pProp->Set((long)intVal);
+   }
+   else if (eAct == MM::AfterSet)
+   {
+      pProp->Get(longVal);
+      int ret = SendIntegerToDevice("RP_ENAB", channel_, (int)longVal);
+      if (ret != DEVICE_OK) return ret;
+   }
+   return DEVICE_OK;
+}

@@ -92,6 +92,7 @@ private:
    int channelY_; // 0-based channel number for Y axis
    double stepSizeXUm_;
    double stepSizeYUm_;
+   bool motionInProgress_;
 };
 
 
@@ -139,4 +140,5 @@ private:
    int channel_; // 0-based channel number for axis
    double stepSizeUm_;
    long originSteps_;
+   bool motionInProgress_;
 };

@@ -450,7 +450,8 @@ CPicoXYStage::CPicoXYStage() :
    stepSizeXUm_(0.1), // um
    stepSizeYUm_(0.1), // um
    channelX_(-1), // channel on the controller, -1 means not set
-   channelY_(-1) // channel on the controller, -1 means not set
+   channelY_(-1), // channel on the controller, -1 means not set
+   motionInProgress_(false)
 {
    InitializeDefaultErrorMessages();
 
@@ -531,12 +532,13 @@ int CPicoXYStage::Initialize()
    pAct = new CPropertyAction(this, &CPicoXYStage::OnAccelX);
    CreateFloatProperty("AccelerationX [mm/s^2]", 0.0, false, pAct); // mm/s^2
    if (ret != DEVICE_OK) return ret;
-//   SetPropertyLimits("AccelerationX [mm/s^2]", 0.01, 2.0); // limit checks in the device
 
    pAct = new CPropertyAction(this, &CPicoXYStage::OnAccelY);
    CreateFloatProperty("AccelerationY [mm/s^2]", 0.0, false, pAct); // mm/s^2
    if (ret != DEVICE_OK) return ret;
-//   SetPropertyLimits("AccelerationY [mm/s^2]", 0.01, 2.0); // limit checks in the device
+
+   ret = CreateIntegerProperty("SettleTime [ms]", 0, false);
+   if (ret != DEVICE_OK) return ret;
 
    pAct = new CPropertyAction(this, &CPicoXYStage::OnRemote);
    ret = CreateProperty("IsRemoteControlled", "0", MM::Integer, false, pAct); // [0 or 1]
@@ -612,13 +614,22 @@ int CPicoXYStage::SendIntegerToDevice(const char* command, int channel, int valu
 bool CPicoXYStage::Busy()
 {
    int isDoneX, isDoneY;
+   long delayTime;
 
    int ret = GetIntegerFromDevice("MC_POSR", channelX_, isDoneX);
    if (ret != DEVICE_OK) return false;
    ret = GetIntegerFromDevice("MC_POSR", channelY_, isDoneY);
    if (ret != DEVICE_OK) return false;
 
-   if (isDoneX == 1 && isDoneY == 1) return false; // both axes are done
+   if (isDoneX == 1 && isDoneY == 1) {
+      // both axes are done
+      if (motionInProgress_) { // delay only after motion
+         GetProperty("SettleTime [ms]", delayTime);
+         CDeviceUtils::SleepMs(delayTime);
+      }
+      motionInProgress_ = false;
+      return false;
+   }
    else return true; // at least one axis is still moving
  }
 
@@ -632,6 +643,7 @@ int CPicoXYStage::SetPositionSteps(long x, long y)
    if (ret != DEVICE_OK) return ret;
    ret = SendIntegerToDevice("MC_MPOS", channelY_, (int)y);
    if (ret != DEVICE_OK) return ret;
+   motionInProgress_ = true;
 
    return DEVICE_OK;
 }
@@ -897,7 +909,8 @@ CPicoStage::CPicoStage(const char* deviceName) :
    stepSizeUm_(0.1),
    originSteps_(0),
    channel_(-1), // -1 means not set
-   id_("-") // axis ID, e.g. "Z" or "Aux"
+   id_("-"), // axis ID, e.g. "Z" or "Aux"
+   motionInProgress_(false)
 {
    InitializeDefaultErrorMessages();
 
@@ -985,6 +998,9 @@ int CPicoStage::Initialize()
    if (ret != DEVICE_OK) return ret;
    // SetPropertyLimits("AccelerationX [mm/s^2]", 0.01, 2.0); // limit checks in the device
 
+   ret = CreateIntegerProperty("SettleTime [ms]", 0, false);
+   if (ret != DEVICE_OK) return ret;
+
    pAct = new CPropertyAction(this, &CPicoStage::OnRemote);
    ret = CreateProperty("IsRemoteControlled", "0", MM::Integer, false, pAct); // [0 or 1]
    if (ret != DEVICE_OK) return ret;
@@ -1055,11 +1071,19 @@ int CPicoStage::SendIntegerToDevice(const char* command, int channel, int value)
 bool CPicoStage::Busy()
 {
    int isDone;
+   long delayTime;
 
    int ret = GetIntegerFromDevice("MC_POSR", channel_, isDone);
    if (ret != DEVICE_OK) return false;
 
-   if (isDone == 1) return false; // axes is done
+   if (isDone == 1) {
+      if (motionInProgress_) { // delay only after motion
+         GetProperty("SettleTime [ms]", delayTime);
+         CDeviceUtils::SleepMs(delayTime);
+      }
+      motionInProgress_ = false;
+      return false;
+   }
    else return true; // axis is still moving
 }
 
